@@ -7457,7 +7457,7 @@ case 'playptt': {
       const data = await ytmp3(url);
 
       await socket.sendMessage(sender, {
-        audio: { url: data.downloadUrl || data.lien }
+        audio: { url: data.downloadUrl || data.lien },
         mimetype: 'audio/mpeg',
         ptt: command === 'playptt',
         contextInfo: {
@@ -7484,7 +7484,7 @@ case 'playptt': {
       const data = await ytmp4(url, '720');
 
       await socket.sendMessage(sender, {
-        video: { url: data.downloadUrl || data.lien }
+        video: { url: data.downloadUrl || data.lien },
         caption:
           `🎬 *${data.title || title}*\n\n` +
           `📺 Qualité : 720p\n` +

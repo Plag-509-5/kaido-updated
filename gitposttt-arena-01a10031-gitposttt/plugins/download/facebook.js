@@ -1,18 +1,23 @@
 const axios = require('axios');
 
-async function downloadFacebook(url) {
-  try {
-    const res = await axios.get(`https://api.giftedtech.web.id/api/download/facebook?apikey=gifted&url=${encodeURIComponent(url)}`, { timeout: 20000 });
-    if (res.data?.result) {
-      const d = res.data.result;
-      return {
-        title: d.title || 'Facebook Video',
-        videoUrl: d.hd || d.sd || d.video
-      };
-    }
-  } catch (e) {}
+function normalise(data) {
+  const root = data?.result || data?.data || data;
+  const videoUrl = root?.hd || root?.hd_url || root?.high || root?.sd || root?.sd_url || root?.video || root?.url || root?.links?.[0]?.url;
+  return videoUrl ? { title: root.title || root.caption || 'Facebook Video', videoUrl } : null;
+}
 
-  throw new Error('Impossible de télécharger la vidéo Facebook. Lien invalide ou privé.');
+async function downloadFacebook(url) {
+  const providers = [
+    () => axios.get('https://api.giftedtech.web.id/api/download/facebook', { params: { apikey: 'gifted', url }, timeout: 20000 }),
+    () => axios.get('https://api.ryzendesu.vip/api/downloader/facebook', { params: { url }, timeout: 20000 })
+  ];
+  for (const provider of providers) {
+    try {
+      const data = normalise((await provider()).data);
+      if (data) return data;
+    } catch (e) { console.warn('[FB provider failed]', e.response?.status || e.message); }
+  }
+  throw new Error('Impossible de télécharger cette vidéo Facebook. Elle est peut-être privée ou le lien a expiré.');
 }
 
 module.exports = {
@@ -22,21 +27,12 @@ module.exports = {
   description: 'Télécharge une vidéo depuis Facebook',
   usage: '.fb <lien Facebook>',
   async execute({ socket, msg, from, args, prefix }) {
-    const url = args[0];
-    if (!url || (!url.includes('facebook.com') && !url.includes('fb.watch'))) {
-      return await socket.sendMessage(from, {
-        text: `👥 *Usage :* \`${prefix}fb https://fb.watch/...\``
-      }, { quoted: msg });
-    }
-
-    await socket.sendMessage(from, { text: '⏳ *Téléchargement de la vidéo Facebook...*' }, { quoted: msg });
-
+    const url = args.join(' ').trim();
+    if (!url || !/(facebook\.com|fb\.watch)/i.test(url)) return socket.sendMessage(from, { text: `👥 Usage : ${prefix}fb https://fb.watch/...` }, { quoted: msg });
+    await socket.sendMessage(from, { text: '⏳ Récupération de la vidéo Facebook...' }, { quoted: msg });
     try {
       const data = await downloadFacebook(url);
-      await socket.sendMessage(from, {
-        video: { url: data.videoUrl },
-        caption: `👥 *Facebook Video* — 𝐊𝐚𝐢𝐝𝐨-𝐌𝐃\n📌 ${data.title}`
-      }, { quoted: msg });
+      await socket.sendMessage(from, { video: { url: data.videoUrl }, caption: `👥 *Facebook Video* — KAIDO-MD\n📌 ${data.title}`, mimetype: 'video/mp4' }, { quoted: msg });
     } catch (err) {
       console.error('[FB ERROR]', err);
       await socket.sendMessage(from, { text: `❌ ${err.message}` }, { quoted: msg });

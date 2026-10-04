@@ -503,8 +503,18 @@ function getHaitiTimestamp() {
 
 // Résultat : "lundi 27 janvier 2025, 15:30:45"
 const activeSockets = new Map();
+// Une seule tentative de connexion par numéro : évite les sockets concurrents,
+// une cause fréquente de réponses lentes et de sessions qui se remplacent.
+const connectingSessions = new Set();
+const reconnectTimers = new Map();
+const reconnectAttempts = new Map();
+const lastConnectionActivity = new Map();
 
 const socketCreationTime = new Map();
+
+const SESSION_RECONNECT_BASE_MS = Math.max(2000, Number(process.env.SESSION_RECONNECT_BASE_MS) || 5000);
+const SESSION_RECONNECT_MAX_MS = Math.max(30000, Number(process.env.SESSION_RECONNECT_MAX_MS) || 120000);
+const SESSION_STALE_AFTER_MS = Math.max(60000, Number(process.env.SESSION_STALE_AFTER_MS) || 10 * 60 * 1000);
 
 const otpStore = new Map();
 // ============================================================
@@ -10369,7 +10379,10 @@ async function deleteSessionAndCleanup(number, socketInstance) {
 // ---------------- auto-restart ----------------
 
 function setupAutoRestart(socket, number) {
+  const sanitized = String(number).replace(/[^0-9]/g, '');
+  lastConnectionActivity.set(sanitized, Date.now());
   socket.ev.on('connection.update', async (update) => {
+    lastConnectionActivity.set(sanitized, Date.now());
     const { connection, lastDisconnect } = update;
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode
@@ -10383,8 +10396,17 @@ function setupAutoRestart(socket, number) {
         console.log(`User ${number} logged out. Cleaning up...`);
         try { await deleteSessionAndCleanup(number, socket); } catch(e){ console.error(e); }
       } else {
-        console.log(`Connection closed for ${number} (not logout). Attempt reconnect...`);
-        try { await delay(10000); activeSockets.delete(number.replace(/[^0-9]/g,'')); socketCreationTime.delete(number.replace(/[^0-9]/g,'')); const mockRes = { headersSent:false, send:() => {}, status: () => mockRes }; await EmpirePair(number, mockRes); } catch(e){ console.error('Reconnect attempt failed', e); }
+        activeSockets.delete(sanitized);
+        const attempt = (reconnectAttempts.get(sanitized) || 0) + 1;
+        reconnectAttempts.set(sanitized, attempt);
+        const wait = Math.min(SESSION_RECONNECT_MAX_MS, SESSION_RECONNECT_BASE_MS * (2 ** Math.min(attempt - 1, 6))) + Math.floor(Math.random() * 1000);
+        clearTimeout(reconnectTimers.get(sanitized));
+        console.log(`Connection fermée pour ${sanitized}; reconnexion dans ${wait} ms (tentative ${attempt})`);
+        reconnectTimers.set(sanitized, setTimeout(async () => {
+          reconnectTimers.delete(sanitized);
+          try { const mockRes = { headersSent:false, send:() => {}, status: () => mockRes }; await EmpirePair(sanitized, mockRes); }
+          catch(e) { console.error('Reconnect attempt failed', e); }
+        }, wait));
       }
 
     }
@@ -10395,7 +10417,15 @@ function setupAutoRestart(socket, number) {
 // ---------------- EmpirePair (pairing, temp dir, persist to Mongo) ----------------
 
 async function EmpirePair(number, res) {
-  const sanitizedNumber = number.replace(/[^0-9]/g, '');
+  const sanitizedNumber = String(number).replace(/[^0-9]/g, '');
+  if (!sanitizedNumber) throw new Error('Numéro de session invalide');
+  if (activeSockets.has(sanitizedNumber) || connectingSessions.has(sanitizedNumber)) {
+    if (res && !res.headersSent) res.send({ status: 'already_connected_or_connecting', number: sanitizedNumber });
+    return;
+  }
+  connectingSessions.add(sanitizedNumber);
+  // Libère un verrou abandonné (pairing ou réseau bloqué), sans tuer la session.
+  setTimeout(() => connectingSessions.delete(sanitizedNumber), 90 * 1000).unref?.();
   const sessionPath = path.join(os.tmpdir(), `session_${sanitizedNumber}`);
   await initMongo().catch(()=>{});
   // Prefill from Mongo if available
@@ -10444,20 +10474,36 @@ handleMessageRevocation(socket, sanitizedNumber);
     }
 
     // Save creds to Mongo when updated
-    socket.ev.on('creds.update', async () => {
+    let credsSaveTimer;
+    let credsSaveRunning = false;
+    let credsSavePending = false;
+    const persistCreds = async () => {
+      if (credsSaveRunning) { credsSavePending = true; return; }
+      credsSaveRunning = true;
       try {
         await saveCreds();
         const fileContent = await fs.readFile(path.join(sessionPath, 'creds.json'), 'utf8');
-        const credsObj = JSON.parse(fileContent);
-        const keysObj = state.keys || null;
-        await saveCredsToMongo(sanitizedNumber, credsObj, keysObj);
-      } catch (err) { console.error('Failed saving creds on creds.update:', err); }
+        await saveCredsToMongo(sanitizedNumber, JSON.parse(fileContent), state.keys || null);
+      } catch (err) { console.error('Failed saving creds:', err); }
+      finally {
+        credsSaveRunning = false;
+        if (credsSavePending) { credsSavePending = false; persistCreds(); }
+      }
+    };
+    // Les mises à jour de clés peuvent être très fréquentes : regrouper les écritures
+    // protège Mongo et garde le traitement des messages réactif.
+    socket.ev.on('creds.update', () => {
+      clearTimeout(credsSaveTimer);
+      credsSaveTimer = setTimeout(persistCreds, 750);
     });
 
 
     socket.ev.on('connection.update', async (update) => {
       const { connection } = update;
       if (connection === 'open') {
+        connectingSessions.delete(sanitizedNumber);
+        reconnectAttempts.delete(sanitizedNumber);
+        lastConnectionActivity.set(sanitizedNumber, Date.now());
         try {
           await delay(3000);
           const userJid = jidNormalizedUser(socket.user.id);

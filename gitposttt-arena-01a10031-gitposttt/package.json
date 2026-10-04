@@ -17,7 +17,7 @@
     "@rexxhayanasi/elaina-baileys": "^1.2.0",
     "@ryuu-reinzz/baileys": "^2.0.2",
     "@vitalets/google-translate-api": "^9.2.1",
-    "@whiskeysockets/baileys": "npm:wileys",
+    "@whiskeysockets/baileys": "npm:xzcbailz",
     "acrcloud": "^1.4.0",
     "aptoide-scraper": "^1.0.1",
     "axios": "^1.2.5",
@@ -50,7 +50,7 @@
     "yt-search": "2.12.1"
   },
   "engines": {
-    "node": ">=18.x"
+    "node": ">=20.x"
   },
   "keywords": [
     "whatsapp",

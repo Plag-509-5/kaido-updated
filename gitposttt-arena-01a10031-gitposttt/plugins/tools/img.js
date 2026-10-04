@@ -3,17 +3,29 @@ const cheerio = require('cheerio');
 const { generateWAMessageContent, generateWAMessageFromContent, proto } = require('@rexxhayanasi/elaina-baileys');
 
 async function searchImages(query, limit = 6) {
-  const { data } = await axios.get('https://www.google.com/search', {
-    params: { q: query, tbm: 'isch' },
-    headers: { 'User-Agent': 'Mozilla/5.0' },
-    timeout: 15000
+  // Bing expose l'URL originale dans l'attribut JSON `m` (contrairement aux
+  // miniatures lazy-loaded de Google qui donnaient toujours une liste vide).
+  const { data } = await axios.get('https://www.bing.com/images/search', {
+    params: { q: query, form: 'HDRSC2', first: 1 },
+    headers: { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36' },
+    timeout: 20000
   });
   const $ = cheerio.load(data);
   const urls = [];
-  $('img').each((_, el) => {
-    const src = $(el).attr('src');
-    if (src && src.startsWith('http') && !urls.includes(src)) urls.push(src);
+  $('.iusc').each((_, el) => {
+    try {
+      const meta = JSON.parse($(el).attr('m') || '{}');
+      const url = meta.murl || meta.turl;
+      if (url && /^https?:\/\//i.test(url) && !urls.includes(url)) urls.push(url);
+    } catch (_) {}
   });
+  // Fallback pour les pages Bing dont la structure HTML change.
+  if (!urls.length) {
+    for (const match of String(data).matchAll(/\"murl\":\"(https?:\/\/[^\"]+)/g)) {
+      const url = match[1].replace(/\\\//g, '/');
+      if (!urls.includes(url)) urls.push(url);
+    }
+  }
   return urls.slice(0, limit);
 }
 

@@ -1,4 +1,28 @@
 const axios = require('axios');
+const fs = require('fs-extra');
+const os = require('os');
+const path = require('path');
+const ytdlp = require('yt-dlp-exec');
+
+async function downloadWithYtDlp(url) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kaido-fb-'));
+  const output = path.join(dir, 'video.%(ext)s');
+  try {
+    await ytdlp(url, {
+      output,
+      format: 'bv*+ba/b',
+      mergeOutputFormat: 'mp4',
+      noPlaylist: true,
+      maxFilesize: '100M',
+      retries: 2,
+      socketTimeout: 30,
+      noWarnings: true
+    });
+    const file = (await fs.readdir(dir)).find(x => /\.(mp4|webm|mkv)$/i.test(x));
+    if (!file) throw new Error('yt-dlp n’a produit aucun fichier');
+    return { buffer: await fs.readFile(path.join(dir, file)), cleanup: () => fs.remove(dir) };
+  } catch (e) { await fs.remove(dir); throw e; }
+}
 
 function normalise(data) {
   const root = data?.result || data?.data || data;
@@ -31,8 +55,18 @@ module.exports = {
     if (!url || !/(facebook\.com|fb\.watch)/i.test(url)) return socket.sendMessage(from, { text: `👥 Usage : ${prefix}fb https://fb.watch/...` }, { quoted: msg });
     await socket.sendMessage(from, { text: '⏳ Récupération de la vidéo Facebook...' }, { quoted: msg });
     try {
-      const data = await downloadFacebook(url);
-      await socket.sendMessage(from, { video: { url: data.videoUrl }, caption: `👥 *Facebook Video* — KAIDO-MD\n📌 ${data.title}`, mimetype: 'video/mp4' }, { quoted: msg });
+      // Téléchargement local : évite les URLs signées expirées renvoyées par les APIs.
+      let local;
+      try { local = await downloadWithYtDlp(url); }
+      catch (e) { console.warn('[FB yt-dlp fallback]', e.message); }
+      if (local) {
+        try {
+          await socket.sendMessage(from, { video: local.buffer, caption: '👥 *Facebook Video* — KAIDO-MD', mimetype: 'video/mp4' }, { quoted: msg });
+        } finally { await local.cleanup(); }
+      } else {
+        const data = await downloadFacebook(url);
+        await socket.sendMessage(from, { video: { url: data.videoUrl }, caption: `👥 *Facebook Video* — KAIDO-MD\\n📌 ${data.title}`, mimetype: 'video/mp4' }, { quoted: msg });
+      }
     } catch (err) {
       console.error('[FB ERROR]', err);
       await socket.sendMessage(from, { text: `❌ ${err.message}` }, { quoted: msg });

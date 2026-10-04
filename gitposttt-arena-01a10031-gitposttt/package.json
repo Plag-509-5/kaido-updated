@@ -8,6 +8,7 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
+    "dotenv": "^16.4.7",
     "@blackamda/telegram-image-url": "1.0.0",
     "@dark-yasiya/scrap": "1.0.1",
     "@dark-yasiya/yt-dl.js": "1.0.5",
